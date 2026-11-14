@@ -1,79 +1,73 @@
-# Certificate Rotation Runbook — Entra SAML SSO ↔ Zammad
+# PKI Operations Runbook — Entra SAML Signing-Certificate Lifecycle
 
-**Scope:** Microsoft Entra Enterprise Application `CHS – Clinic Integration Support Desk` and Zammad **Authentication via SAML**. This runbook reflects a supervised lab exercise, not an approved production change procedure.
+**System:** Cedarbridge Health System (simulated) · Entra enterprise application `CHS – Clinic Integration Support Desk` · Zammad SAML SSO.  
+**Change type:** Supervised, proactive X.509 signing-certificate rollover / trust update.  
+**Scope:** **PKI controls supporting IAM federation**, not a certificate-authority deployment or automated renewal system.
 
-## 1. Preconditions / change control
+## Control objective and ownership
 
-- Record the Entra application name, change owner, planned window, certificate expiry, and rollback decision point. Obtain change approval for a production environment.
-- Ensure an authorized Entra application administrator is available, plus a **working local Zammad administrator account** independent of SAML.
-- Validate baseline SSO using a **new private-browser session** (for this lab, the test user was Jordan Lee).
-- In **Entra ID → Enterprise applications → [Zammad enterprise app] → Single sign-on → SAML Certificates**, record the **Active** certificate, expiry and thumbprint; verify notification contacts.
-- In **Zammad → Settings → Security → Third-party Applications → Authentication via SAML**, confirm the **IdP Certificate** field is populated. The deprecated **fingerprint** field should not also be used as the trust input.
-- Download the original public signing certificate and privately preserve the current Zammad IdP certificate text. Save only in access-controlled storage, outside a public repository. Do **not** export private signing keys, tokens, or tenant-specific login URLs to GitHub.
+Keep **Entra's active private signing key / public X.509 certificate** aligned with the **IdP public certificate trusted by Zammad**. The IAM application owner is accountable for inventory, expiry notification ownership, approved cutover, SSO validation, rollback, and retirement of obsolete trust material. Entra manages its certificate's private key; the lab operator downloaded only the public certificate.
 
-**Evidence:** `PKI-Certificate-Baseline.png`, `PKI-Zammad-Trust-Baseline.png`, `PKI-SSO-Baseline-Success.png` (where captured).
+## 1. Change preflight / certificate inventory
 
-## 2. Prepare an inactive replacement
+- Identify the Entra application, change owner, SP owner, change window, on-call escalation, and recovery decision point. Obtain production authorization before any change.
+- Inspect **Entra ID → Enterprise applications → Zammad → Single sign-on → SAML Signing Certificate**. Record **Active/Inactive status**, expiry, thumbprint and **Sign SAML assertion / SHA-256** settings.
+- Verify **Notification Email Addresses** include monitored owners. Entra's built-in reminders are described at **60, 30 and 7 days before expiry**; configuration is not proof that an email was delivered.
+- In Zammad, verify **Settings → Security → Third-party Applications → Authentication via SAML → IdP Certificate** is populated and SSL Verification = yes. Use the certificate rather than the deprecated SHA-1 fingerprint field.
+- Perform **fresh private-browser CHS Employee SSO login** as an approved test identity. Verify application access and matching Entra sign-in event.
+- Confirm **independent local Zammad administrator login** and an authorized Entra administrator, both available during rollover.
+- Privately back up original public certificate and existing Zammad trust text. Avoid putting real SSO URLs, certificate backups, tenant IDs, keys, or secrets in GitHub.
 
-1. In the Entra SAML Signing Certificate editor, choose **New Certificate** and **Save**.
-2. Verify **Certificate A = Active**, **Certificate B = Inactive**. Record validity dates and thumbprints.
-3. Download **Certificate B (Base64/public .cer)**; view the complete PEM text (`BEGIN CERTIFICATE` through `END CERTIFICATE`). Ensure no extra characters or lost lines.
-4. Confirm you can still authenticate to Zammad as a local administrator without SAML. Do not close that session during the change.
-5. Confirm who receives certificate-expiration notifications. Notification configuration is not the same as proof an alert email was delivered.
+## 2. Stage replacement B without changing live trust
 
-**Evidence:** `PKI-Certificate-Staged-Replacement.png`, `PKI-Certificate-Expiration-Notifications.png` if captured.
+1. Generate **new X.509 signing certificate B** in Entra; **Save**.
+2. Ensure **A = Active, B = Inactive**; record expiration and thumbprint.
+3. Download B's **Base64 public certificate** and inspect the entire PEM text (`BEGIN CERTIFICATE` through `END CERTIFICATE`). Do not export signing private keys.
+4. Confirm rollback copy of A and non-SSO Zammad administrator access again.
 
-## 3. Coordinated cutover — A to B
+## 3. Coordinated trust rotation A → B
 
-**Risk:** Because the lab Zammad configuration accepts one IdP certificate, new SAML logins may briefly fail while Entra and Zammad have mismatched certificate settings. Use a maintenance window in production; this lab did **not** establish zero-downtime rotation.
+> **Risk:** Zammad's lab configuration has one IdP public certificate field. There may be a short mismatch window. This lab did **not** demonstrate zero downtime.
 
-1. Keep the local Zammad admin session open.
-2. Replace Zammad's **IdP Certificate** with the complete public **Certificate B**; save. Keep the fingerprint field unused and SSL verification enabled.
-3. In Entra SAML Certificates, set **Certificate B = Active**. Verify **Certificate A = Inactive**. Do not delete A.
-4. Launch a **fresh private browser**. Use **CHS Employee SSO** to sign in as the authorized test employee.
-5. Verify the application dashboard loads. Correlate the time and user with Entra **Sign-in logs**; check the correct Zammad enterprise application and **Success** status.
-6. If the sign-in fails, **stop**. Don't keep randomly activating/deleting certificates; use Section 4.
+1. With local Zammad admin open, replace the **IdP Certificate** field with **B's public certificate**, save. Keep deprecated fingerprint field unused.
+2. In Entra, **Make B Active**, verify **A Inactive**. Don't delete A.
+3. Open a **new private browser session**. Initiate CHS Employee SSO and confirm successful access to Zammad as test employee Jordan.
+4. Correlate with the **CHS – Clinic Integration Support Desk** Entra sign-in event; confirm **Success**. An existing Zammad page or session refresh is not a valid new-login test.
+5. If validation fails, **stop and use rollback** rather than continuing ad-hoc certificate changes.
 
-**Evidence:** `PKI-Certificate-Rollover-Activated.png`, `PKI-SSO-Post-Rotation-Success.png`, optional Zammad dashboard.
+## 4. Rollback B → A
 
-## 4. Rollback — B to A
+1. Restore **A's public certificate** in Zammad and save using independent local admin access.
+2. Make **A Active** in Entra; verify B Inactive.
+3. Sign out of Zammad, open a new private browser session, and test CHS Employee SSO.
+4. Verify successful entry into the application and, where available, the related Entra sign-in event.
+5. Document the result. Zammad's **Config has changed / reload** notice alone does *not* prove new SAML authentication.
 
-1. Keep or regain **local Zammad administrator access**; do not rely on SAML for recovery.
-2. Restore the original public IdP **Certificate A** in Zammad and save.
-3. Make **Certificate A = Active** in Entra. Check B becomes Inactive.
-4. Sign out of the test application and initiate a **new** SSO login from a private browser. An existing Zammad session or page reload does **not** prove a new SAML assertion succeeded.
-5. Confirm Entra shows a successful Zammad application sign-in. Record the observed outcome and any errors.
+## 5. Return to intended final state A → B
 
-**Evidence:** `PKI-Rollback-Original-Restored.png` and fresh authentication proof, if captured.
+1. Update Zammad to trust public **B** and save.
+2. Reactivate **B** in Entra; confirm **B Active, A Inactive**.
+3. Repeat a fresh SSO login and application check. The test was successful; the supplied screenshot set does **not** contain a dedicated final successful sign-in-log event.
+4. Preserve A as an Inactive rollback option for the lab. Schedule eventual certificate retirement separately under change control.
 
-## 5. Return to intended final state — A to B
+## 6. Failure response and operational improvements
 
-1. Copy Certificate B into the Zammad IdP Certificate field again; save.
-2. Activate B in Entra; confirm **B Active / A Inactive**.
-3. Perform a new SSO login and check successful application access plus Entra sign-in result.
-4. Retain A as an inactive rollback option until a separate retirement decision, with appropriate change control. Store public certificate backups securely and avoid public upload of tenant-specific configuration.
-
-**Evidence:** `PKI-Certificate-Final-State.png`, `PKI-SSO-Final-Verification.png` if captured.
-
-## 6. Troubleshooting and failure response
-
-| Symptom | Likely question / next action |
+| Symptom / risk | IAM–PKI response |
 | --- | --- |
-| Microsoft authentication succeeds but Zammad rejects SSO | Does Zammad's configured public IdP certificate match the signing certificate Active in Entra? Restore matching trust. |
-| Existing session works but fresh SSO fails | The app session may be cached. Test a new private-browser sign-in; don't infer certificate health from a refresh. |
-| Zammad local admin unavailable | **Stop before rollover.** Recover an approved non-SSO administrator path first. |
-| Entra shows success but Zammad rejects or loops | Inspect the application-side SAML error, ACS/Entity ID and time synchronization; correlation may require application logs. |
-| No log event immediately visible | Check tenant/application scope, interactive sign-ins and time range; avoid treating filter inconsistency as an authentication failure. |
+| Entra login works, Zammad rejects SSO | Verify Zammad's trusted public certificate corresponds to **Active** Entra signer. Restore last known-good pair. |
+| Existing Zammad page works after rollover | Force **new SAML authentication**; a cached application session isn't evidence. |
+| Local administrator recovery unavailable | Stop before cutover. Establish approved non-SSO recovery route first. |
+| Certificate expiry not monitored | Confirm owner, notification recipients, certificate register and alert escalation. Verify alert delivery in production. |
+| Multiple SPs depend on one IdP signing certificate | Inventory all SP dependencies; coordinate per-app trust updates, staged certs and maintenance windows. |
 
-## 7. Scope, security, and cleanup
+**Production next steps:** CA/PKI standards alignment, approval and separation of duties, enterprise expiry inventory, alert verification, automated metadata ingestion where available, change windows and incident escalation, and documented certificate retirement.
 
-- The certificate downloaded from Entra is **public X.509 material**, not the private key. It should still be handled as operational configuration and may identify the tenant/application.
-- Don't publish real IdP SSO/logout URLs, private-key material, session IDs, administrator credentials or unredacted screenshots.
-- Entra administrative authority and Zammad local admin access should follow least-privilege practices.
-- The test verified **application sign-in**, not a continuously monitored zero-downtime rotation.
-- Retain the original inactive certificate only as long as the agreed rollback window requires; planned retirement and inventory updates would be separate change steps.
+## Public evidence and limitations
 
-## References
+See [Evidence index](../Evidence/README.md). Preserve only redacted screenshots in the repository. This exercise did not include private-key escrow, HSM management, CA deployment, automated rollover, a live outage, a measured zero-downtime change, or tests of expiration-email delivery.
 
-- Microsoft Learn: [Manage federation certificates for SAML single sign-on](https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/tutorial-manage-certificates-for-federated-single-sign-on)
-- Zammad Admin Docs: [SAML authentication](https://admin-docs.zammad.org/en/latest/settings/security/third-party/saml.html)
+### References
+
+- [Microsoft Entra: Manage federation certificates](https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/tutorial-manage-certificates-for-federated-single-sign-on)
+- [Microsoft Entra: Certificate signing options](https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/certificate-signing-options)
+- [Zammad: SAML authentication settings](https://admin-docs.zammad.org/en/latest/settings/security/third-party/saml.html)

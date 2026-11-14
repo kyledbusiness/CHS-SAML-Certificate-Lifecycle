@@ -1,96 +1,116 @@
-# When a Valid Login Isn't Enough: SAML Certificate Rollover & Recovery
+# When a Valid Login Still Fails | PKI Certificate Lifecycle & SAML Trust Engineering
 
-**Cedarbridge Health System (CHS)** · **Microsoft Entra ID** · **SAML 2.0 SSO** · **X.509 signing certificates** · **Zammad** · **Certificate lifecycle** · **Trust management**
+**Cedarbridge Health System (CHS)** · **PKI for IAM** · **Microsoft Entra ID** · **SAML 2.0** · **X.509** · **SHA-256** · **Certificate rotation & recovery** · **Zammad**
 
-> **A user can have a valid account, satisfy MFA, and still be locked out of an application.** If Entra starts signing SAML assertions with a certificate the application does not trust, the authentication handoff breaks. This lab follows a planned certificate change from baseline and preparation to rollover, rollback, and fresh sign-in verification.
+> **An employee passes MFA. Microsoft Entra ID accepts their identity. But the support portal still refuses to sign them in.**  
+> The account isn't the problem. The application no longer trusts the certificate used to sign the SAML assertion.
 
-## The problem: What happens when the trust changes?
+That's the kind of failure I wanted to prevent in this project. In an IAM environment, **PKI isn't only about TLS certificates on web servers**. It's also the lifecycle of the signing certificates and public-key trust relationships that make federated authentication possible.
 
-Cedarbridge Health System is a **fictional healthcare organization** using a Zammad-based Clinic Integration Support Desk. Staff use the portal to report technical issues, including clinical-system access problems. Even a short SSO interruption could delay support requests at the wrong time.
+## The business problem — when identity is valid but trust is broken
 
-Its SAML integration relies on a signing certificate in **Microsoft Entra ID** and a matching **IdP public certificate configured in Zammad**. That dependency can be easy to overlook: replacing a certificate in the identity provider is not enough if the service provider still trusts the previous one.
+At **Cedarbridge Health System**, my fictional healthcare organization, employees use a Zammad-based *Clinic Integration Support Desk* to report application and access issues. If its SAML sign-in breaks, support requests can be delayed—even when employee accounts, MFA, and Conditional Access are functioning as intended.
 
-The original certificate was valid until **November 2029**. There was **no live expiration incident**. I performed a **proactive rotation simulation** to answer three operational questions:
+This integration has an operational dependency:
 
-- **Can we identify the current signing certificate and prepare its replacement before cutover?**
-- **Can we coordinate the trust change and prove *new* SAML sessions work?**
-- **If the change breaks authentication, is there a verified way back?**
+- **Microsoft Entra ID**, the identity provider (IdP), signs a SAML assertion with its **private signing key**.
+- **Zammad**, the service provider (SP), verifies the signature using the corresponding **public key in an X.509 certificate** it trusts.
+- When Entra rotates the signing certificate, **Zammad must trust the corresponding replacement** before the new signatures can be verified.
 
-**My objective:** Rotate an Entra SAML signing certificate without losing administrative recovery access, verify application-level SSO after each change, and leave a reproducible rotation runbook.
+The original certificate was valid until **November 2029**. There was **no actual outage or imminent expiration**. I simulated a proactive rotation to test whether I could manage that PKI lifecycle dependency before it became an incident.
 
-## The solution: preserve trust, verify the handoff
+**The question:** Can I replace a federation signing certificate, preserve an administrative recovery route, verify SSO *after* the trust change, and prove that rollback works?
+
+## My solution — own the certificate lifecycle, not just the SSO setting
+
+| PKI / IAM responsibility | What I implemented | Why it matters |
+| --- | --- | --- |
+| **Certificate inventory & expiry** | Inspected active X.509 certificate, thumbprint, expiration date, SHA-256 signing settings, and notification contacts | Identify trust dependencies before they surprise application owners |
+| **Certificate staging** | Generated replacement Certificate B in Entra and kept it **Inactive** | Prepare the renewal without changing the working SSO signing key |
+| **Trust distribution** | Updated Zammad's **IdP Certificate** to the replacement public certificate, then activated B in Entra | Align the public verification key with the IdP's active signing key |
+| **Authentication verification** | Tested **fresh CHS Employee SSO** as Jordan and reviewed the successful Entra application sign-in | An active certificate alone doesn't prove the SP accepts the assertion |
+| **Rollback & availability planning** | Preserved original Certificate A and verified an **independent local Zammad admin** login before cutover | Avoid depending on the broken SSO path to repair SSO |
+| **Recovery testing** | Reactivated A on both sides and tested fresh SSO; then returned to B and tested again | Validate a recovery procedure instead of merely documenting one |
+
+### How the trust relationship works
 
 ```text
-Microsoft Entra ID (IdP)                       Zammad (Service Provider)
-  Signs SAML response                            Verifies the signature
-  with Certificate A ──────────── trusted by ───> Certificate A
-          │
-          │  Stage Certificate B as inactive
-          │  Back up A + confirm local admin access
-          v
-  Planned cutover: update Zammad trust to B → activate B in Entra
-          │
-          v
-  Fresh CHS Employee SSO login → confirm Zammad + Entra sign-in
-          │
-          v
-  Recovery drill: restore A on both sides → fresh login succeeds
-          │
-          v
-  Final state: B active/trusted; A retained inactive for rollback
+                         SAML authentication trust
+
+  Microsoft Entra ID (IdP)                Zammad (Service Provider)
+  ------------------------                -------------------------
+  Private signing key A ─ signs ────────> SAML assertion
+                                          Verifies using public
+                                          certificate A  ✓
+
+  Stage certificate B (Inactive)
+  Verify independent admin recovery + preserve certificate A
+
+  Cutover: Zammad trusts public certificate B → Entra activates B
+  Fresh SSO test: new assertion signed with key B → verified by B  ✓
+
+  Rollback test: restore public A in Zammad → reactivate A in Entra
+  Fresh SSO test: original trust path works again  ✓
+
+  Final state: B Active and trusted; A retained Inactive
 ```
 
-| Safeguard | Implementation | Verified outcome |
-| --- | --- | --- |
-| **Certificate inventory** | Inspected Entra active status, validity and thumbprint; reviewed Zammad's IdP certificate setting | Original signing certificate identified; baseline SSO worked |
-| **Staged replacement** | Created a new Entra SAML signing certificate and left it **Inactive** | Original remained Active during preparation |
-| **Change coordination** | Updated Zammad's trusted public IdP certificate and activated the matching Entra certificate | Fresh SAML login reached Jordan's Zammad account |
-| **Recovery access** | Kept a separate, functioning Zammad **local admin** session and backup of the original certificate | SAML configuration remained recoverable during cutover |
-| **Rollback drill** | Restored the original certificate on both sides, then tested a **new SSO login** | Original trust path worked again |
-| **Final-state check** | Reapplied the replacement to Zammad, activated it in Entra and signed in again | Replacement Active, original Inactive; fresh SSO succeeded |
+## 1 — I established a known-good PKI baseline
 
-## Case study 1 — Preparing for the failure *before* it happens
+I began in **Entra Enterprise Applications → SAML Signing Certificate** to identify the certificate currently signing assertions, its validity period, its thumbprint, the **Sign SAML assertion** option, and **SHA-256** signing algorithm. I also reviewed the certificate-expiration notification contacts.
 
-**Scenario:** The support desk's signing certificate is due for replacement. An administrator who activates a new Entra certificate without updating Zammad risks breaking authentication, even if users and MFA policies are healthy.
+In Zammad I confirmed the existing public **IdP Certificate** was configured and SSL verification remained enabled. Then I signed in through CHS Employee SSO before changing anything.
 
-I inspected the SAML certificate inventory in **Entra Enterprise Applications**, confirmed the original certificate's validity through November 2029, and checked Zammad's current **IdP Certificate** trust configuration. I then generated a second Entra certificate but kept it **Inactive** while the original continued signing assertions.
+**Evidence:** [Original signing certificate](Evidence/01-Baseline/PKI-Certificate-Baseline.png) · [Zammad's trusted IdP certificate configuration](Evidence/01-Baseline/PKI-Zammad-Trust-Baseline.png)
 
-The preparation included downloading both **public certificates**, keeping the original trust value available privately for rollback, and confirming that Zammad's local administrator login still worked without CHS SSO. This was a controlled **manual** change, not an automated metadata rollover.
+**PKI takeaway:** You cannot manage certificate risk without knowing which certificate is active, when it expires, who owns the change, and which service providers depend on it.
 
-**Evidence:** [Zammad's original SAML trust configuration](Evidence/01-Baseline/PKI-Zammad-Trust-Baseline.png). Additional Entra certificate-inventory and staging screenshots are described in the [evidence index](Evidence/README.md).
+## 2 — I staged the replacement without disrupting the working certificate
 
-**Lesson:** Certificate rotation is an application-trust change, not merely a new file generated in Entra.
+I generated **Certificate B**, an Entra-managed X.509 SAML signing certificate, and left it **Inactive** while **Certificate A remained Active**. I downloaded the public certificates for the planned trust changes and retained the original Zammad certificate configuration privately.
 
-## Case study 2 — A successful login needs a fresh session
+The most important decision was made **before the cutover**: I verified that a **local Zammad administrator could still sign in without SAML**. If certificate trust failed during the rollover, I would still have a route to repair it.
 
-**Change:** I placed the new public signing certificate into Zammad's IdP Certificate field and activated that same replacement certificate in Entra. Zammad uses a single configured IdP certificate, so there was a possible **brief mismatch window** during the coordinated switch; this lab does not claim zero downtime.
+![Active original certificate and inactive replacement staged in Entra](Evidence/02-Preparation/PKI-Certificate-Staged-Replacement.png)
 
-I opened a fresh private-browser sign-in using **CHS Employee SSO** and signed in as **Jordan Lee**, a fictional test employee. The user reached Zammad's ticket dashboard. The related Entra sign-in record showed the **CHS – Clinic Integration Support Desk** application with **Success**.
+**PKI takeaway:** The recovery path and original certificate must be available *before* promoting the replacement.
 
-**Evidence:** [Successful Entra application sign-in following the rotation](Evidence/03-Rollover/PKI-SSO-Post-Rotation-Success.png).
+## 3 — I rotated the signing certificate and verified the application, not just Entra
 
-**Lesson:** A green certificate status in Entra does not prove the service provider trusts it. A **fresh, application-level SSO test** is the more meaningful verification.
+Zammad has a single configured IdP certificate field. I coordinated a manual cutover: update Zammad to trust public **Certificate B**, then make **B Active** in Entra. This creates a possible brief mismatch window, so I am **not claiming a zero-downtime rollover**.
 
-## Case study 3 — Proving the rollback, not just writing it down
+After activation, I opened a fresh browser session and signed in as **Jordan Lee**, our fictional test employee. Zammad loaded successfully, and the corresponding Entra log showed **Success** for **CHS – Clinic Integration Support Desk**.
 
-The engineering decision I wanted to test was **recovery before retirement**. I did not delete the original certificate after activating the replacement.
+**Evidence:** [Replacement certificate activated](Evidence/03-Rollover/PKI-Certificate-Rollover-Activated.png) · [Successful application sign-in](Evidence/03-Rollover/PKI-SSO-Post-Rotation-Success.png) · [Zammad support-desk access](Evidence/03-Rollover/PKI-Zammad-Post-Rotation-Access.png)
 
-I restored the original IdP certificate in Zammad, reactivated it in Entra and performed a fresh SSO login. It worked. Zammad also displayed a prompt to reload an existing session; I **signed out and signed in again** rather than treating a refresh as evidence of new SAML authentication.
+**PKI takeaway:** A new certificate being *Active* does not mean the service provider trusts it. Successful **new federation authentication** verifies the handoff.
 
-After the rollback drill, I repeated the planned cutover and verified another fresh login with the **replacement Active** and the **original Inactive**. The retained inactive certificate provides a rollback option, but is **not a substitute** for periodic certificate retirement and a tested recovery procedure.
+## 4 — I proved rollback, then restored the intended final state
 
-**Evidence:** See the [rollback and final-state screenshot checklist](Evidence/README.md) and the [rotation runbook](Docs/Certificate-Rotation-Runbook.md).
+Next I deliberately reversed the change. I restored the original public certificate in Zammad, reactivated **Certificate A** in Entra, and tested a new CHS SSO login. It worked.
 
-**Lesson:** The recovery procedure is part of the change, not an afterthought. An already-open application session is not proof that new federation requests will succeed.
+Zammad also prompted an already-open session to reload its configuration. **That reload was not proof of authentication**. I signed out and initiated a fresh SSO login instead.
 
-## What this lab demonstrates—and what it doesn't
+Finally, I repeated the cutover to **Certificate B**, made it Active again, and verified another fresh SSO login. I retained A as an Inactive recovery option rather than deleting it during the test.
 
-**Demonstrated:** SAML 2.0 IdP/service-provider trust coordination, X.509 certificate staging, planned rollover, independent SSO verification, local administrator recovery, successful rollback and restoration of the replacement certificate.
+![Final certificate state: replacement active, original inactive](Evidence/04-Rollback-Recovery/PKI-Certificate-Final-State.png)
 
-**Not demonstrated:** An actual certificate-expiration outage; certificate-authority deployment; private-key generation or escrow; automated federation-metadata refresh; signing-algorithm cryptographic inspection; continuous availability during rollover; or enterprise-wide expiry discovery. Expiration-notification *delivery* was not independently tested.
+**Evidence:** [Original certificate restored](Evidence/04-Rollback-Recovery/PKI-Rollback-Original-Restored.png) · [Final Entra certificate state](Evidence/04-Rollback-Recovery/PKI-Certificate-Final-State.png) · [Zammad configuration-reload notice (not sign-in proof)](Evidence/04-Rollback-Recovery/PKI-Zammad-Config-Reload-Notice.png)
 
-For real operations, I'd add monitored ownership/notification distribution lists, approved maintenance windows, a certificate inventory with expiry alerts, a second-person change review, automated SP metadata ingestion where supported, and post-change monitoring across affected applications.
+The **final fresh login succeeded in the hands-on test**; a separate final successful-sign-in record was not included in this screenshot collection.
 
-**Runbook:** [Certificate rotation, validation and recovery](Docs/Certificate-Rotation-Runbook.md) · **Evidence:** [Screenshot index](Evidence/README.md)
+**PKI takeaway:** A change plan should include **verified rollback**, an explicit recovery operator, and a fresh authentication test—not just instructions to reverse the certificate status.
 
-*CHS and the employee accounts are simulated. The original certificate was not about to expire; this was a controlled proactive lifecycle test, not a production outage or a full PKI deployment.*
+## What I demonstrated—and what I'd change in production
+
+**Demonstrated:** X.509 signing-certificate inventory, SAML 2.0 signing trust, SHA-256 configuration review, certificate staging and rotation, manual IdP/SP trust coordination, expiration-notification configuration, independent admin recovery, fresh authentication validation, rollback, and return to the replacement.
+
+**Not demonstrated:** Running a certificate authority, managing private signing keys or an HSM, enterprise-wide certificate discovery, automatic metadata-based rotation, verified expiration-email delivery, observed production outage, or a guaranteed zero-downtime deployment.
+
+For a production healthcare service, I would add an owned certificate register, monitored expiry-alert distribution list, scheduled maintenance and change approval, application-owner signoff, post-change monitoring, and automated federation metadata support when the SP allows it. The old certificate would eventually be retired under a separately approved change.
+
+---
+
+**[Rotation & Recovery Runbook](Docs/Certificate-Rotation-Runbook.md)** · **[Evidence index](Evidence/README.md)**
+
+*Portfolio lab using fictional Cedarbridge Health System identities and a working Entra–Zammad SAML integration. This is a demonstration of **PKI lifecycle responsibility within IAM engineering**, not a claim of owning a full enterprise PKI or responding to an actual outage.*
