@@ -1,5 +1,7 @@
 # When a Valid Login Still Fails | PKI Certificate Lifecycle & SAML Trust Engineering
 
+**[Watch the 4-minute video walkthrough](https://www.loom.com/share/c56d91d83d5c4464b103cd808fa0dab3)
+
 **Cedarbridge Health System (CHS)** · **PKI for IAM** · **Microsoft Entra ID** · **SAML 2.0** · **X.509** · **SHA-256** · **Certificate rotation & recovery** · **Zammad**
 
 > **An employee passes MFA. Microsoft Entra ID accepts their identity. But the support portal still refuses to sign them in.**  
